@@ -214,39 +214,40 @@ async function loadStats(c){
 async function findTickets(c, addr){
   let mintTx = {};   // tokenId(string) -> txHash
   let owned = [];    // tokenIds (BigInt) actualmente en poder de addr
+  const lower = addr.toLowerCase();
 
-  // 1) Intento por eventos Transfer (rápido y nos da el hash de la trx)
-  try{
-    const topic = ethers.id("Transfer(address,address,uint256)");
-    const toTopic = ethers.zeroPadValue(addr.toLowerCase(), 32);
-    const logs = await provider.getLogs({
-      address: CONTRACT, topics: [topic, null, toTopic],
-      fromBlock: 0, toBlock: "latest"
-    });
-    for (const lg of logs){
-      const id = ethers.getBigInt(lg.topics[3]);
-      mintTx[id.toString()] = lg.transactionHash; // último Transfer hacia addr de ese token
+  // 1) Recorremos los tokens existentes por ownerOf (método más confiable)
+  let next = 0;
+  try{ next = Number(await c.nextTokenId()); }catch(_){}
+  const lim = Math.min(next || 0, 2000);
+  const BATCH = 20;
+  for (let s = 0; s < lim; s += BATCH){
+    const slice = [];
+    for (let i = s; i < Math.min(s + BATCH, lim); i++) slice.push(i);
+    const res = await Promise.all(slice.map(i =>
+      c.ownerOf(i).then(o => ({ i, o })).catch(() => null)
+    ));
+    for (const r of res){
+      if (r && r.o && r.o.toLowerCase() === lower) owned.push(BigInt(r.i));
     }
-    // confirmar tenencia actual
-    for (const idStr of Object.keys(mintTx)){
-      try{
-        const o = await c.ownerOf(idStr);
-        if (o.toLowerCase() === addr.toLowerCase()) owned.push(BigInt(idStr));
-      }catch(e){}
-    }
-  }catch(e){
-    // 2) Fallback: recorrer ids por ownerOf (cupos chicos en clase)
+  }
+
+  // 2) Enriquecemos con el hash del mint vía eventos (si el nodo lo permite)
+  if (owned.length){
     try{
-      const next = Number(await c.nextTokenId());
-      const lim = Math.min(next, 2000);
-      for (let i=0;i<lim;i++){
-        try{
-          const o = await c.ownerOf(i);
-          if (o.toLowerCase() === addr.toLowerCase()) owned.push(BigInt(i));
-        }catch(_){}
+      const topic = ethers.id("Transfer(address,address,uint256)");
+      const toTopic = ethers.zeroPadValue(lower, 32);
+      const logs = await provider.getLogs({
+        address: CONTRACT, topics: [topic, null, toTopic],
+        fromBlock: 0, toBlock: "latest"
+      });
+      for (const lg of logs){
+        const id = ethers.getBigInt(lg.topics[3]);
+        mintTx[id.toString()] = lg.transactionHash;
       }
     }catch(_){}
   }
+
   owned.sort((a,b)=> a<b?-1:1);
   return { owned, mintTx };
 }
@@ -427,10 +428,42 @@ async function claim(receiver){
     loading("Confirmá la transacción en MetaMask…");
     const tx = await cw.claimFor(receiver);
     loading("Asignando la entrada… esperá unos segundos ⛓️");
-    await tx.wait();
+    const receipt = await tx.wait();
+
+    if (receipt && receipt.status === 0){
+      errBox("La transacción se revirtió. Puede que esa dirección ya tenga entrada o que se haya agotado el cupo.");
+      return;
+    }
+
+    // Leemos el resultado con el proveedor de MetaMask (siempre actualizado)
+    const cread = new ethers.Contract(CONTRACT, ABI, bp);
+
+    // Buscamos el tokenId recién minteado en los eventos del recibo
+    let mintedId = null;
+    try{
+      const iface = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"]);
+      for (const lg of receipt.logs){
+        try{
+          const p = iface.parseLog(lg);
+          if (p && p.name === "Transfer" && p.args.to.toLowerCase() === receiver.toLowerCase()){
+            mintedId = p.args.tokenId; break;
+          }
+        }catch(_){}
+      }
+    }catch(_){}
+
+    let evName = "Entrada UNQFest";
+    try{ evName = await cread.name(); }catch(_){}
 
     input.value = receiver;
-    await lookup();
+    loadStats(cread);
+
+    if (mintedId !== null){
+      const meta = await fetchMeta(cread, mintedId);
+      out.innerHTML = renderTicket(receiver, mintedId, evName, meta, receipt.hash);
+    } else {
+      await lookup(); // respaldo
+    }
   }catch(e){
     const m = e.shortMessage || e.reason || e.message || "No se pudo asignar la entrada.";
     if (/user rejected|denied/i.test(m)) errBox("Cancelaste la transacción en MetaMask.");
