@@ -138,9 +138,8 @@
   </div>
 
 <script>
-// ⬇️⬇️ Dirección del contrato (con claimFor) ⬇️⬇️
+//Dirección del contrato (con claimFor)
 const CONTRACT = "0xe539CEE1145775d32207c357efb1C5b61AF4905E";
-// ⬆️⬆️ si redeployás, cambiá solo esta línea ⬆️⬆️
 const SCAN = "https://sepolia.etherscan.io";
 const RPCS = [
   "https://ethereum-sepolia-rpc.publicnode.com",
@@ -210,13 +209,12 @@ async function loadStats(c){
   }catch(e){}
 }
 
-// Busca el/los tokenId que tiene una dirección + el hash del mint si se puede
+
 async function findTickets(c, addr){
   let mintTx = {};   // tokenId(string) -> txHash
   let owned = [];    // tokenIds (BigInt) actualmente en poder de addr
   const lower = addr.toLowerCase();
 
-  // 1) Recorremos los tokens existentes por ownerOf (método más confiable)
   let next = 0;
   try{ next = Number(await c.nextTokenId()); }catch(_){}
   const lim = Math.min(next || 0, 2000);
@@ -232,7 +230,6 @@ async function findTickets(c, addr){
     }
   }
 
-  // 2) Enriquecemos con el hash del mint vía eventos (si el nodo lo permite)
   if (owned.length){
     try{
       const topic = ethers.id("Transfer(address,address,uint256)");
@@ -269,7 +266,6 @@ function noTicket(addr){
 }
 
 async function fetchMeta(c, tokenId){
-  // intenta tokenURI; si falla usa metadataURI(); devuelve {name,image,raw}
   let uri = null;
   try{ uri = await c.tokenURI(tokenId); }catch(e){}
   if (!uri){ try{ uri = await c.metadataURI(); }catch(e){} }
@@ -285,7 +281,7 @@ async function fetchMeta(c, tokenId){
       const r = await fetch(ipfs(uri), {mode:"cors"});
       if (r.ok){ const j = await r.json(); res.name = j.name; res.image = ipfs(j.image); }
     }
-  }catch(e){ /* CORS u otro: mostramos el uri crudo igual */ }
+  }catch(e){  }
   return res;
 }
 
@@ -323,13 +319,12 @@ function renderTicket(addr, tokenId, evName, meta, txHash){
 
 async function lookup(){
   const raw = input.value || "";
-  // Extrae la dirección aunque vengan espacios o caracteres invisibles pegados
   const m = raw.match(/0x[0-9a-fA-F]{40}/);
   if (!m){
     errBox("Pegá una dirección válida (0x… con 40 caracteres hexadecimales).");
     return;
   }
-  const addr = m[0].toLowerCase(); // en minúsculas: válida para todas las llamadas
+  const addr = m[0].toLowerCase();
 
   btn.disabled = true;
   loading("Conectando con Sepolia…");
@@ -343,7 +338,6 @@ async function lookup(){
 
     const { owned, mintTx } = await findTickets(c, addr);
 
-    // respaldo por si los eventos no anduvieron: claimed/balanceOf
     let has = owned.length > 0;
     if (!has){
       try{
@@ -358,7 +352,6 @@ async function lookup(){
     if (!has){ noTicket(addr); return; }
 
     if (owned.length === 0){
-      // sabemos que tiene (claimed/balance) pero no ubicamos el id: mostramos info básica
       out.innerHTML = `<div class="msg info">✅ Esta dirección <b>sí tiene</b> una entrada de UNQFest, pero el nodo no devolvió el detalle del token. Mirá los detalles en
         <a href="${SCAN}/token/${CONTRACT}?a=${addr}" target="_blank" rel="noopener">Etherscan</a>.</div>`;
       return;
@@ -377,7 +370,6 @@ async function lookup(){
   }
 }
 
-// Devuelve el proveedor inyectado (MetaMask), esperando si tarda en cargar
 function pickProvider(eth){
   if (eth && eth.providers && eth.providers.length){
     return eth.providers.find(p => p.isMetaMask) || eth.providers[0];
@@ -394,8 +386,6 @@ function getEthProvider(){
   });
 }
 
-// Asigna la entrada a la dirección escrita llamando claimFor(receiver).
-// MetaMask solo firma y paga el gas; la entrada queda en "receiver".
 async function claim(receiver){
   loading("Buscando MetaMask…");
   const eth = await getEthProvider();
@@ -408,7 +398,6 @@ async function claim(receiver){
     const bp = new ethers.BrowserProvider(eth);
     await bp.send("eth_requestAccounts", []);
 
-    // Asegurar red Sepolia (0xaa36a7)
     let net = await bp.getNetwork();
     if (Number(net.chainId) !== 11155111){
       try{
@@ -434,10 +423,8 @@ async function claim(receiver){
       return;
     }
 
-    // Leemos el resultado con el proveedor de MetaMask (siempre actualizado)
     const cread = new ethers.Contract(CONTRACT, ABI, bp);
 
-    // Buscamos el tokenId recién minteado en los eventos del recibo
     let mintedId = null;
     try{
       const iface = new ethers.Interface(["event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)"]);
@@ -461,7 +448,7 @@ async function claim(receiver){
       const meta = await fetchMeta(cread, mintedId);
       out.innerHTML = renderTicket(receiver, mintedId, evName, meta, receipt.hash);
     } else {
-      await lookup(); // respaldo
+      await lookup();
     }
   }catch(e){
     const m = e.shortMessage || e.reason || e.message || "No se pudo asignar la entrada.";
